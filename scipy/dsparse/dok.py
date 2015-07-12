@@ -1,8 +1,4 @@
-# 
-# Out of Core Dictionary
-# 
-# 
-#
+"""Dictionary Of Keys based matrix"""
 
 from __future__ import division, print_function, absolute_import
 
@@ -12,150 +8,15 @@ __all__ = ['dok_matrix', 'isspmatrix_dok']
 
 import functools
 import operator
-import sqlite3, dill, io, time
 
 import numpy as np
 
-from scipy.lib.six import zip as izip, xrange
-from scipy.lib.six import iteritems
+from scipy._lib.six import zip as izip, xrange
+from scipy._lib.six import iteritems
 
-from scipy.sparse import spmatrix, isspmatrix
-from scipy.sparse.sputils import (isdense, getdtype,
-                                  isshape, isintlike, isscalarlike,
-                                  upcast, upcast_scalar,
-                                  IndexMixin, get_index_dtype)
-
-def def_serial(obj):
-    en = io.BytesIO()
-    dill.dump(obj, en)
-    en.seek(0)
-    return en.read()
-
-def def_unserial(obj):
-    en = io.BytesIO()
-    en.write(obj)
-    en.seek(0)
-    return dill.load(en)
-
-def int_tuple_ser(width, height):
-    return lambda obj: width*obj[0] + obj[1]
-
-def int_tuple_unser(width, height):
-    return lambda obj: (int(obj/width), obj % width)
-
-
-class ddict:
-    # 
-    # Commit Frequency is in hertz
-    # 
-    def __init__(self, filename, tablename="dict", clear=True, commit_freq=1.0,
-                 key_types = ("BLOB", def_serial, def_unserial),
-                 val_types = ("BLOB", def_serial, def_unserial)):
-        self.conn = sqlite3.connect(filename)
-        self.conn.text_factory = str
-        self.cur = self.conn.cursor()
-        self.freq = commit_freq
-        self.last_commit = time.time()
-
-        self.key_ser, self.key_unser = key_types[1:]
-        self.val_ser, self.val_unser = val_types[1:]
-        
-        if clear:
-            self.cur.execute("DROP TABLE IF EXISTS " + tablename)
-        self.cur.execute("CREATE TABLE IF NOT EXISTS " + tablename +
-                         " (key %s PRIMARY KEY, value %s);" % (key_types[0],
-                                                               val_types[0]))
-        self.commit()
-        self.T = tablename
-
-    def force_commit(self):
-        self.conn.commit()
-        self.last_commit = time.time()
-
-    def commit(self):
-        if self.freq <= 0 or (time.time() - self.last_commit)*self.freq >= 1:
-            self.conn.commit()
-            self.last_commit = time.time()
-        
-    def get(self, key, default=None):
-        self.cur.execute("SELECT value FROM %s WHERE key=?;" % self.T,
-                         (self.key_ser(key),));
-
-        res = self.cur.fetchone()
-        if res == None or len(res) <= 0:
-            if default == None:
-                raise KeyError("The key does not exist: " + str(key))
-            else:
-                return default
-
-        return self.val_unser(res[0])
-
-
-    def __getitem__(self, key, default=None):
-        return self.get(key, default)
-
-    def __setitem__(self, key, val):
-        self.cur.execute(("INSERT OR REPLACE " +
-                          "INTO %s VALUES (?, ?)") % self.T,
-                         (self.key_ser(key), self.val_ser(val)))
-        self.commit()
-        
-    def __delitem__(self, key):
-        self.cur.execute("DELETE FROM %s WHERE key=?;" %
-                         self.T, (self.key_ser(key),))
-        self.commit()
-
-    def iteritems(self):
-        self.cur.execute("SELECT key, value FROM %s" % self.T)
-        while True:
-            row = self.cur.fetchone()
-            if not row:
-                break
-            else:
-                key = self.key_unser(row[0])
-                val = self.val_unser(row[1])
-                yield (key, val)
-
-    def iterkeys(self):
-        for key, val in ddict.iteritems(self):
-            yield key
-
-    def itervalues(self):
-        for key, val in ddict.iteritems(self):
-            yield val
-
-    def keys(self):
-        return [k for k in ddict.iterkeys(self)]
-
-    def values(self):
-        return [v for v in ddict.itervalues(self)]
-
-    def __iter__(self):
-        for key in ddict.iterkeys(self):
-            yield key
-
-    def update(self, d):
-        if isinstance(d, dict) or isinstance(d, ddict):
-            for key, val in d.iteritems():
-                # For disambiguation
-                ddict.__setitem__(self, key, val)
-        else: # Assume stream of pairs
-            for k, v in d:
-                ddict.__setitem__(self, k, v)
-    
-    # Can be made more efficient
-    def __len__(self):
-        return len(ddict.keys(self))
-
-#
-# The below code was taken from Scipy
-# with minor changes
-# 
-# 
-
-            
-"""Dictionary Of Keys based matrix"""
-
+from .base import spmatrix, isspmatrix
+from .sputils import (isdense, getdtype, isshape, isintlike, isscalarlike,
+                      upcast, upcast_scalar, IndexMixin, get_index_dtype)
 
 try:
     from operator import isSequenceType as _is_sequence
@@ -165,7 +26,7 @@ except ImportError:
                 or hasattr(x, 'next'))
 
 
-class dok_matrix(ddict, spmatrix, IndexMixin):
+class dok_matrix(spmatrix, IndexMixin, dict):
     """
     Dictionary Of Keys based sparse matrix.
 
@@ -206,18 +67,17 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
 
     Examples
     --------
-    >>> from scipy.sparse import *
-    >>> from scipy import *
-    >>> S = dok_matrix((5,5), dtype=float32)
+    >>> import numpy as np
+    >>> from scipy.sparse import dok_matrix
+    >>> S = dok_matrix((5, 5), dtype=np.float32)
     >>> for i in range(5):
-    >>>     for j in range(5):
-    >>>         S[i,j] = i+j # Update element
+    ...     for j in range(5):
+    ...         S[i, j] = i + j    # Update element
 
     """
 
-    def __init__(self, arg1, shape=None, filename="sparse.spy",
-                 tablename="dok_matrix", dtype=None, copy=False,
-                 commit_freq=1.0):
+    def __init__(self, arg1, shape=None, dtype=None, copy=False):
+        dict.__init__(self)
         spmatrix.__init__(self)
 
         self.dtype = getdtype(dtype, default=float)
@@ -233,6 +93,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
             if dtype is not None:
                 arg1 = arg1.astype(dtype)
 
+            self.update(arg1)
             self.shape = arg1.shape
             self.dtype = arg1.dtype
         else:  # Dense ctor
@@ -244,30 +105,18 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
             if len(arg1.shape) != 2:
                 raise TypeError('expected rank <=2 dense array or matrix')
 
-            from scipy.sparse.coo import coo_matrix
+            from .coo import coo_matrix
             d = coo_matrix(arg1, dtype=dtype).todok()
+            self.update(d)
             self.shape = arg1.shape
             self.dtype = d.dtype
 
-        ddict.__init__(self, filename, tablename=tablename,
-                       commit_freq=commit_freq,
-                       key_types=("UNSIGNED INTEGER", 
-                                  int_tuple_ser(*self.shape), 
-                                  int_tuple_unser(*self.shape)),
-                       val_types=("REAL", float, float))
-        
-        if isspmatrix(arg1):  # Sparse ctor
-            ddict.update(self, arg1)
-        elif not (isinstance(arg1, tuple) and isshape(arg1)):
-            ddict.update(self, d)
-            
-
     def getnnz(self):
-        return ddict.__len__(self)
+        return dict.__len__(self)
     nnz = property(fget=getnnz)
 
     def __len__(self):
-        return ddict.__len__(self)
+        return dict.__len__(self)
 
     def get(self, key, default=0.):
         """This overrides the dict.get method, providing type checking
@@ -280,7 +129,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
             raise IndexError('index must be a pair of integers')
         if (i < 0 or i >= self.shape[0] or j < 0 or j >= self.shape[1]):
             raise IndexError('index out of bounds')
-        return ddict.get(self, key, default)
+        return dict.get(self, key, default)
 
     def __getitem__(self, index):
         """If key=(i,j) is a pair of integers, return the corresponding
@@ -304,7 +153,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
                 j += self.shape[1]
             if j < 0 or j >= self.shape[1]:
                 raise IndexError('index out of bounds')
-            return ddict.get(self, (i,j), 0.)
+            return dict.get(self, (i,j), 0.)
         elif ((i_intlike or isinstance(i, slice)) and
               (j_intlike or isinstance(j, slice))):
             # Fast path for slicing very sparse matrices
@@ -340,7 +189,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
             i[i < 0] += self.shape[0]
 
         min_j = j.min()
-        if min_j < -self.shape[0] or j.max() >= self.shape[1]:
+        if min_j < -self.shape[1] or j.max() >= self.shape[1]:
             raise IndexError('index (%d) out of range -%d to %d)' %
                              (j.min(), self.shape[1], self.shape[1]-1))
         if min_j < 0:
@@ -351,9 +200,9 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
 
         for a in xrange(i.shape[0]):
             for b in xrange(i.shape[1]):
-                v = ddict.get(self, (i[a,b], j[a,b]), 0.)
+                v = dict.get(self, (i[a,b], j[a,b]), 0.)
                 if v != 0:
-                    ddict.__setitem__(newdok, (a, b), v)
+                    dict.__setitem__(newdok, (a, b), v)
 
         return newdok
 
@@ -374,8 +223,8 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
             b, rb = divmod(jj - j_start, j_stride)
             if b < 0 or b >= shape[1] or rb != 0:
                 continue
-            ddict.__setitem__(newdok, (a, b),
-                             ddict.__getitem__(self, (ii, jj)))
+            dict.__setitem__(newdok, (a, b),
+                             dict.__getitem__(self, (ii, jj)))
 
         return newdok
 
@@ -383,11 +232,11 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
         if isinstance(index, tuple) and len(index) == 2:
             # Integer index fast path
             i, j = index
-            if (isintlike(i) and isintlike(j) and 
-                0 <= i < self.shape[0] and 0 <= j < self.shape[1]):
+            if (isintlike(i) and isintlike(j) and 0 <= i < self.shape[0]
+                    and 0 <= j < self.shape[1]):
                 v = np.asarray(x, dtype=self.dtype)
                 if v.ndim == 0 and v != 0:
-                    ddict.__setitem__(self, (int(i), int(j)), v[()])
+                    dict.__setitem__(self, (int(i), int(j)), v[()])
                     return
 
         i, j = self._unpack_index(index)
@@ -415,19 +264,19 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
             i[i < 0] += self.shape[0]
 
         min_j = j.min()
-        if min_j < -self.shape[0] or j.max() >= self.shape[1]:
+        if min_j < -self.shape[1] or j.max() >= self.shape[1]:
             raise IndexError('index (%d) out of range -%d to %d)' %
                              (j.min(), self.shape[1], self.shape[1]-1))
         if min_j < 0:
             j = j.copy()
             j[j < 0] += self.shape[1]
 
-        ddict.update(self, izip(izip(i.flat, j.flat), x.flat))
+        dict.update(self, izip(izip(i.flat, j.flat), x.flat))
 
         if 0 in x:
             zeroes = x == 0
             for key in izip(i[zeroes].flat, j[zeroes].flat):
-                if ddict.__getitem__(self, key) == 0:
+                if dict.__getitem__(self, key) == 0:
                     # may have been superseded by later update
                     del self[key]
 
@@ -460,7 +309,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
         elif isdense(other):
             new = self.todense() + other
         else:
-            raise TypeError("data type not understood")
+            return NotImplemented
         return new
 
     def __radd__(self, other):
@@ -487,7 +336,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
         elif isdense(other):
             new = other + self.todense()
         else:
-            raise TypeError("data type not understood")
+            return NotImplemented
         return new
 
     def __neg__(self):
@@ -528,7 +377,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
             # new.dtype.char = self.dtype.char
             return self
         else:
-            raise NotImplementedError
+            return NotImplemented
 
     def __truediv__(self, other):
         if isscalarlike(other):
@@ -549,7 +398,7 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
                 self[key] = val / other
             return self
         else:
-            raise NotImplementedError
+            return NotImplemented
 
     # What should len(sparse) return? For consistency with dense matrices,
     # perhaps it should be the number of rows?  For now it returns the number
@@ -598,18 +447,14 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
 
     def tocoo(self):
         """ Return a copy of this matrix in COOrdinate format"""
-        from scipy.sparse.coo import coo_matrix
+        from .coo import coo_matrix
         if self.nnz == 0:
             return coo_matrix(self.shape, dtype=self.dtype)
         else:
-            idx_dtype = get_index_dtype(maxval=max(self.shape[0],
-                                                   self.shape[1]))
-            data    = np.asarray(_list(self.values()),
-                                 dtype=self.dtype)
-            indices = np.asarray(_list(self.keys()),
-                                 dtype=idx_dtype).T
-            return coo_matrix((data,indices), shape=self.shape,
-                              dtype=self.dtype)
+            idx_dtype = get_index_dtype(maxval=max(self.shape[0], self.shape[1]))
+            data = np.asarray(_list(self.values()), dtype=self.dtype)
+            indices = np.asarray(_list(self.keys()), dtype=idx_dtype).T
+            return coo_matrix((data,indices), shape=self.shape, dtype=self.dtype)
 
     def todok(self,copy=False):
         if copy:
@@ -624,10 +469,6 @@ class dok_matrix(ddict, spmatrix, IndexMixin):
     def tocsc(self):
         """ Return a copy of this matrix in Compressed Sparse Column format"""
         return self.tocoo().tocsc()
-
-    def toarray(self, order=None, out=None):
-        """See the docstring for `spmatrix.toarray`."""
-        return self.tocoo().toarray(order=order, out=out)
 
     def resize(self, shape):
         """ Resize the matrix in-place to dimensions given by 'shape'.
